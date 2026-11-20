@@ -619,7 +619,7 @@ def add_ayah_par(doc, text, n):
     p.paragraph_format.keep_with_next = True
     p.paragraph_format.line_spacing = LINE_SPACING + 0.1
     if text:
-        _style_run(p.add_run("﴿" + text + "﴾"), AYAH_PT + 4, AYAH_COLOR, font=AYAH_FONT)
+        _style_run(p.add_run("﴿" + text + "﴾"), AYAH_PT + 1, AYAH_COLOR, font=AYAH_FONT)
         _style_run(p.add_run(" " + ar_num(n)), 12, FOOT_COLOR, font=FONT)
     else:
         _style_run(p.add_run("مقدمة" if n == 0 else f"آية {ar_num(n)}"), 14, FOOT_COLOR, font=FONT, bold=True)
