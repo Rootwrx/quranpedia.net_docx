@@ -5,6 +5,9 @@ Examples:
   python build_tafsir_docx.py --data . --ids 1-4,7-9,12 --mode complete
   python build_tafsir_docx.py --data . --ids 3 --mode surah --surahs 1,2,18-20
   python build_tafsir_docx.py --data . --ids 3 --mode both -o out
+  python build_tafsir_docx.py --data . --ids 3 --no-quran      # tafsir only, no verses
+
+Quran verses (from mushafs-<id>.json[.gz] in --data) are included in every mode.
 
 Requires: pip install python-docx
 """
@@ -25,6 +28,8 @@ assert len(SURAHS) == 114, len(SURAHS)
 FONT = "KFGQPC Uthman Taha Naskh"   # body text
 AYAH_FONT = "Kitab"                 # Quran text
 BODY_PT, FOOT_PT, AYAH_PT = 16, 12, 16
+FONT_SCALE = 0.85      # multiplies every font size in the document (--scale)
+LINE_SPACING = 1.0     # body/footnote line height (--line-spacing)
 AYAH_COLOR = RGBColor(0x1F, 0x5C, 0x3A)
 FOOT_COLOR = RGBColor(0x55, 0x55, 0x55)
 PAGE_MARK = re.compile(r"\s*-\[[0-9٠-٩]+\]-\s*")
@@ -230,6 +235,7 @@ def _rtl_par(p):
 
 def _style_run(run, size, color=None, bold=False, font=None):
     font = font or FONT
+    size = max(6, round(size * FONT_SCALE * 2) / 2)
     run.font.name = font
     rpr = run._r.get_or_add_rPr()
     rpr.rFonts.set(qn("w:cs"), font)
@@ -252,7 +258,7 @@ def add_par(doc, runs, size, color_for_plain=None, ayah_color=AYAH_COLOR, space_
     p = doc.add_paragraph(style=style)
     _rtl_par(p)
     p.paragraph_format.space_after = Pt(space_after)
-    p.paragraph_format.line_spacing = 1.1
+    p.paragraph_format.line_spacing = LINE_SPACING
     for text, is_ayah in runs:
         if is_ayah:
             r = p.add_run(text)
@@ -264,36 +270,82 @@ def add_par(doc, runs, size, color_for_plain=None, ayah_color=AYAH_COLOR, space_
     return p
 
 
-def add_heading(doc, text, size, center=True):
+_BM_ID = [100]
+
+
+def add_heading(doc, text, size, center=True, toc=False):
     p = doc.add_paragraph(style="Heading 1")
     _rtl_par(p)
     if center:
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_before = Pt(12)
     p.paragraph_format.space_after = Pt(12)
+    if toc:
+        _BM_ID[0] += 1
+        name = f"_Toc{_BM_ID[0]}"
+        bs = OxmlElement("w:bookmarkStart")
+        bs.set(qn("w:id"), str(_BM_ID[0]))
+        bs.set(qn("w:name"), name)
+        p._p.append(bs)
+        doc._toc.append((text, name))
     r = p.add_run(text)
     _style_run(r, size, RGBColor(0, 0, 0), bold=True)
+    if toc:
+        be = OxmlElement("w:bookmarkEnd")
+        be.set(qn("w:id"), str(_BM_ID[0]))
+        p._p.append(be)
     return p
 
 
 def add_toc(doc):
+    """Reserve the spot for the index; call fill_toc(doc, anchor) once all headings exist."""
     p = doc.add_paragraph()
     _rtl_par(p)
+    return p
+
+
+def _fld(p, kind, instr=None):
     r = p.add_run()
-    for kind, txt in (("begin", None), ("instr", 'TOC \\o "1-1" \\h \\z \\u'), ("separate", None), ("text", "اضغط F9 لتحديث الفهرس"), ("end", None)):
-        if kind == "instr":
-            el = OxmlElement("w:instrText")
-            el.set(qn("xml:space"), "preserve")
-            el.text = txt
-            r._r.append(el)
-        elif kind == "text":
-            t = OxmlElement("w:t")
-            t.text = txt
-            r._r.append(t)
-        else:
-            fc = OxmlElement("w:fldChar")
-            fc.set(qn("w:fldCharType"), kind)
-            r._r.append(fc)
+    if instr is not None:
+        el = OxmlElement("w:instrText")
+        el.set(qn("xml:space"), "preserve")
+        el.text = instr
+        r._r.append(el)
+    else:
+        fc = OxmlElement("w:fldChar")
+        fc.set(qn("w:fldCharType"), kind)
+        r._r.append(fc)
+
+
+def fill_toc(doc, anchor):
+    """Static, clickable index (no page numbers, no update prompt). It sits inside a real TOC
+    field, so right-click > Update Field in Word still turns it into a numbered index."""
+    entries = getattr(doc, "_toc", [])
+    if not entries:
+        anchor._p.getparent().remove(anchor._p)
+        return
+    from docx.text.paragraph import Paragraph
+    paras = []
+    for i, (text, bm) in enumerate(entries):
+        np_ = OxmlElement("w:p")
+        anchor._p.addprevious(np_)
+        par = Paragraph(np_, anchor._parent)
+        _rtl_par(par)
+        par.paragraph_format.space_after = Pt(4)
+        if i == 0:
+            _fld(par, "begin")
+            _fld(par, None, 'TOC \\o "1-1" \\h \\z \\u')
+            _fld(par, "separate")
+        hl = OxmlElement("w:hyperlink")
+        hl.set(qn("w:anchor"), bm)
+        hl.set(qn("w:history"), "1")
+        r = par.add_run(text)
+        _style_run(r, 14)
+        hl.append(r._r)
+        par._p.append(hl)
+        paras.append(par)
+    _fld(paras[-1], "end")
+    anchor._p.getparent().remove(anchor._p)
 
 
 def page_break(doc):
@@ -306,10 +358,9 @@ def new_document(with_toc_update=False):
         s.right_margin = s.left_margin = Cm(2.2)
         s.top_margin = s.bottom_margin = Cm(2.2)
         s.footer.is_linked_to_previous = False
-    if with_toc_update:
-        upd = OxmlElement("w:updateFields")
-        upd.set(qn("w:val"), "true")
-        doc.settings.element.append(upd)
+    # NB: no <w:updateFields> here - it makes Word show the "fields may refer to
+    # other files" prompt on open. The TOC is filled in statically instead (fill_toc).
+    doc._toc = []
     return doc
 
 
@@ -418,24 +469,52 @@ def safe(s):
     return re.sub(r'[\\/:*?"<>|\s]+', "_", s).strip("_")
 
 
-def build_complete(book, by, out_path, keep_marks):
+def _quran_title_line(doc, mushaf_name):
+    if mushaf_name:
+        _centered(doc, [("نص القرآن: ", 14, FOOT_COLOR, True), (mushaf_name, 14, None, False)], space_after=8)
+
+
+def build_complete(book, by, out_path, keep_marks, quran=None, mushaf_name=""):
     doc = new_document(with_toc_update=True)
     title_block(doc, book)
+    _quran_title_line(doc, mushaf_name if quran else "")
     page_break(doc)
     add_heading(doc, "الفهرس", 22)
-    add_toc(doc)
-    seen = set()
-    for s, ayahs in by.items():
-        paras = surah_paras(ayahs, seen, keep_marks)
-        if not paras:
-            continue
-        page_break(doc)
-        add_heading(doc, sname(s), 24)
-        write_paras(doc, paras)
+    toc_anchor = add_toc(doc)
+    if quran:
+        cb = compact_book(book, set(by))
+        seen = {cb["label"]: set()}
+        for s in by:
+            page_break(doc)
+            add_heading(doc, sname(s), 24, toc=True)
+            render_combined_surah(doc, s, [cb], quran, seen, keep_marks, show_labels=False)
+    else:
+        seen = set()
+        for s, ayahs in by.items():
+            paras = surah_paras(ayahs, seen, keep_marks)
+            if not paras:
+                continue
+            page_break(doc)
+            add_heading(doc, sname(s), 24, toc=True)
+            write_paras(doc, paras)
+    fill_toc(doc, toc_anchor)
     doc.save(out_path)
 
 
-def build_surah(book, s, ayahs, out_path, keep_marks):
+def build_surah(book, s, ayahs, out_path, keep_marks, quran=None, mushaf_name=""):
+    b = book.get("book", {})
+    if quran:
+        cb = compact_book(book, {s})
+        doc = new_document()
+        title_block(doc, book)
+        _quran_title_line(doc, mushaf_name)
+        page_break(doc)
+        add_heading(doc, sname(s), 24)
+        add_par(doc, [(b.get("short_name") or b.get("name") or "", False)], 14, FOOT_COLOR).alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if not render_combined_surah(doc, s, [cb], quran, {cb["label"]: set()}, keep_marks, show_labels=False):
+            return False
+        doc.save(out_path)
+        return True
     paras = surah_paras(ayahs, set(), keep_marks)
     if not paras:
         return False
@@ -443,7 +522,6 @@ def build_surah(book, s, ayahs, out_path, keep_marks):
     title_block(doc, book)
     page_break(doc)
     add_heading(doc, sname(s), 24)
-    b = book.get("book", {})
     add_par(doc, [(b.get("short_name") or b.get("name") or "", False)], 14, FOOT_COLOR).alignment = WD_ALIGN_PARAGRAPH.CENTER
     write_paras(doc, paras)
     doc.save(out_path)
@@ -539,7 +617,7 @@ def add_ayah_par(doc, text, n):
     p.paragraph_format.space_before = Pt(16)
     p.paragraph_format.space_after = Pt(6)
     p.paragraph_format.keep_with_next = True
-    p.paragraph_format.line_spacing = 1.3
+    p.paragraph_format.line_spacing = LINE_SPACING + 0.1
     if text:
         _style_run(p.add_run("﴿" + text + "﴾"), AYAH_PT + 4, AYAH_COLOR, font=AYAH_FONT)
         _style_run(p.add_run(" " + ar_num(n)), 12, FOOT_COLOR, font=FONT)
@@ -558,7 +636,7 @@ def add_tafsir_label(doc, label, note=""):
         _style_run(p.add_run("  " + note), 12, FOOT_COLOR, font=FONT)
 
 
-def render_combined_surah(doc, s, books, quran, seen, keep_marks):
+def render_combined_surah(doc, s, books, quran, seen, keep_marks, show_labels=True):
     """Returns True if any tafsir content was written."""
     qs = quran.get(s, {})
     nums = set(qs)
@@ -585,7 +663,10 @@ def render_combined_surah(doc, s, books, quran, seen, keep_marks):
             continue
         add_ayah_par(doc, qs.get(n, ""), n)
         for label, note, paras in blocks:
-            add_tafsir_label(doc, label, note)
+            if show_labels:
+                add_tafsir_label(doc, label, note)
+            elif note:
+                add_tafsir_label(doc, "", note)
             write_paras(doc, paras)
             wrote = True
     return wrote
@@ -625,12 +706,13 @@ def run_combine(args, data, out, ids, wanted):
         combined_title(doc, books, mushaf_name)
         page_break(doc)
         add_heading(doc, "الفهرس", 22)
-        add_toc(doc)
+        toc_anchor = add_toc(doc)
         seen = {b["label"]: set() for b in books}
         for s in surahs:
             page_break(doc)
-            add_heading(doc, sname(s), 24)
+            add_heading(doc, sname(s), 24, toc=True)
             render_combined_surah(doc, s, books, quran, seen, args.keep_page_marks)
+        fill_toc(doc, toc_anchor)
         p = out / f"{tag}.docx"
         doc.save(p)
         print(f"  -> {p}")
@@ -660,7 +742,10 @@ def main():
     ap.add_argument("--surahs", default="", help="optional filter, e.g. 1,2,18-20 (default: all)")
     ap.add_argument("-o", "--out", default="out")
     ap.add_argument("--combine", action="store_true", help="per ayah: Quran text, then each selected tafsir under it")
-    ap.add_argument("--mushaf", type=int, default=1, help="mushaf id for Quran text in --combine (default 1 = Hafs, King Fahd)")
+    ap.add_argument("--mushaf", type=int, default=1, help="mushaf id for the Quran text (default 1 = Hafs, King Fahd); file mushafs-<id>.json[.gz] must be in --data")
+    ap.add_argument("--no-quran", action="store_true", help="single-tafsir mode only: leave out the Quran verses")
+    ap.add_argument("--scale", type=float, default=0.85, help="font size multiplier for everything (default 0.85)")
+    ap.add_argument("--line-spacing", type=float, default=1.0, help="line height multiple (default 1.0)")
     ap.add_argument("--no-ligatures", action="store_true", help="keep full salawat text instead of ﷺ")
     ap.add_argument("--no-honorifics", action="store_true", help="don't colour honorific phrases")
     ap.add_argument("--keep-page-marks", action="store_true", help="keep -[٤٠]- page markers")
@@ -671,7 +756,8 @@ def main():
         return
     if not args.ids:
         ap.error("--ids is required (or use --list FILE)")
-    global HONORIFICS_ON, LIGATURES_ON
+    global HONORIFICS_ON, LIGATURES_ON, FONT_SCALE, LINE_SPACING
+    FONT_SCALE, LINE_SPACING = args.scale, args.line_spacing
     LIGATURES_ON = not args.no_ligatures
     HONORIFICS_ON = not args.no_honorifics
     data, out = Path(args.data), Path(args.out)
@@ -679,6 +765,7 @@ def main():
     if args.combine:
         run_combine(args, data, out, parse_ranges(args.ids), wanted)
         return
+    quran, mushaf_name = (None, "") if args.no_quran else load_quran(data, args.mushaf)
     for bid in parse_ranges(args.ids):
         f = find_book_file(data, bid)
         if not f:
@@ -692,7 +779,7 @@ def main():
         if args.mode in ("complete", "both"):
             out.mkdir(parents=True, exist_ok=True)
             p = out / f"{label}.docx"
-            build_complete(book, by, p, args.keep_page_marks)
+            build_complete(book, by, p, args.keep_page_marks, quran, mushaf_name)
             print(f"  -> {p}")
         if args.mode in ("surah", "both"):
             d = out / label
@@ -700,7 +787,7 @@ def main():
             n = 0
             for s, ayahs in by.items():
                 nm = SURAHS[s - 1] if 1 <= s <= 114 else str(s)
-                if build_surah(book, s, ayahs, d / f"{s:03d}-{safe(nm)}.docx", args.keep_page_marks):
+                if build_surah(book, s, ayahs, d / f"{s:03d}-{safe(nm)}.docx", args.keep_page_marks, quran, mushaf_name):
                     n += 1
             print(f"  -> {d}/ ({n} files)")
 
