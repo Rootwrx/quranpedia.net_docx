@@ -616,7 +616,9 @@ def run_combine(args, data, out, ids, wanted):
     surahs = sorted({s for b in books for s in b["surahs"]})
     if wanted:
         surahs = [s for s in surahs if s in wanted]
-    tag = "combined-" + "_".join(str(i) for i in ids[:6]) + ("_etc" if len(ids) > 6 else "")
+    names = [safe(b["label"]) for b in books]
+    tag = "_".join(names[:5]) + ("_وغيرها" if len(names) > 5 else "")
+    out = out / "جمع التفاسير"
     out.mkdir(parents=True, exist_ok=True)
     if args.mode in ("complete", "both"):
         doc = new_document(with_toc_update=True)
