@@ -1,0 +1,12 @@
+*.gz
+out
+out/*
+tafsir*/**
+
+
+
+LICENSE.md
+files
+files.txt
+translations-all.zip
+
