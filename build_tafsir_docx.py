@@ -30,6 +30,110 @@ FOOT_COLOR = RGBColor(0x55, 0x55, 0x55)
 PAGE_MARK = re.compile(r"\s*-\[[0-9٠-٩]+\]-\s*")
 
 
+
+# ---------- honorifics ----------
+HON_COLOR = RGBColor(0x9C, 0x1C, 0x1C)
+HONORIFICS_ON = True
+_HON_PHRASES = [
+    # prophetic
+    "صلى الله عليه وسلم", "صلى الله عليه وآله وسلم", "صلى الله عليه وعلى آله وسلم",
+    "صلى الله عليه وعلى آله وصحبه وسلم", "صلى الله وسلم عليه", "صلى الله عليهم وسلم",
+    "صلوات الله وسلامه عليه", "صلوات الله وسلامه عليهم", "عليه الصلاة والسلام",
+    "عليهم الصلاة والسلام", "عليهما الصلاة والسلام", "عليه أفضل الصلاة والسلام",
+    "عليه السلام", "عليها السلام", "عليهما السلام", "عليهم السلام", "عليهن السلام",
+    "سلام الله عليه", "سلام الله عليهم", "صلى الله عليه", "صلى الله عليهم",
+    # companions
+    "رضي الله عنه", "رضي الله عنها", "رضي الله عنهما", "رضي الله عنهم", "رضي الله عنهن",
+    "رضي الله تعالى عنه", "رضي الله تعالى عنها", "رضي الله تعالى عنهما", "رضي الله تعالى عنهم",
+    "رضوان الله عليه", "رضوان الله عليها", "رضوان الله عليهم", "رضوان الله عليهم أجمعين",
+    "رضوان الله تعالى عليهم", "كرم الله وجهه",
+    # scholars
+    "رحمه الله تعالى", "رحمها الله تعالى", "رحمهم الله تعالى", "رحمهما الله تعالى",
+    "رحمه الله", "رحمها الله", "رحمهم الله", "رحمهما الله", "رحمهن الله",
+    "عليه رحمة الله", "عليهم رحمة الله", "قدس الله روحه", "نور الله ضريحه",
+    # divine
+    "سبحانه وتعالى", "تبارك وتعالى", "تبارك وتقدس", "جل وعلا", "جل جلاله", "عز وجل",
+    "سبحانه", "تعالى", "تبارك اسمه", "جل شأنه",
+    # more prophetic
+    "عليه الصلاة والتسليم", "عليه أزكى الصلاة وأتم التسليم", "عليه أفضل الصلاة وأتم التسليم",
+    "عليها الصلاة والسلام", "عليهن الصلاة والسلام", "عليه وعلى آله الصلاة والسلام",
+    "عليه وعلى نبينا الصلاة والسلام", "على نبينا وعليه الصلاة والسلام",
+    "صلى الله على نبينا محمد وعلى آله وسلم", "صلى الله على محمد وسلم", "صلى الله على محمد",
+    "صلوات الله عليه", "صلوات الله عليهم", "صلوات ربي وسلامه عليه", "صلى الله عليه وسلم تسليما",
+    # more companions / scholars
+    "رضي الله عنهم أجمعين", "رضي الله عنهما وأرضاهما", "رضي الله عنه وأرضاه", "رحمه الله ورضي عنه",
+    "رحمة الله عليه", "رحمة الله عليهم", "غفر الله له", "غفر الله لهم", "عفا الله عنه",
+    "قدس الله سره", "قدس الله أرواحهم", "نضر الله وجهه", "حفظه الله", "أيده الله", "وفقه الله",
+    "تغمده الله برحمته", "طيب الله ثراه",
+    # more divine
+    "سبحانه وبحمده", "تقدست أسماؤه", "تعالى شأنه", "عز شأنه", "جل ثناؤه", "جل في علاه",
+    "عز اسمه", "تبارك الله", "عز من قائل", "جل من قائل", "تعالى ذكره", "تقدس وتعالى",
+    "عز سلطانه", "جلت قدرته", "جل اسمه", "تعالى جده", "سبحانه عما يشركون",
+]
+_LETTER_MAP = {"ا": "[اأإآ]", "أ": "[اأإآ]", "إ": "[اأإآ]", "آ": "[اأإآ]", "ى": "[ىي]", "ي": "[ىي]"}
+_MARKS = "[\u064B-\u065F\u0670\u0640]*"
+
+
+def _phrase_re(ph):
+    out = []
+    for ch in ph:
+        if ch == " ":
+            out.append(r"\s+")
+        else:
+            out.append(_LETTER_MAP.get(ch, re.escape(ch)) + _MARKS)
+    return "".join(out)
+
+
+_alts = [_phrase_re(p) for p in sorted(set(_HON_PHRASES), key=len, reverse=True)]
+HON_RE = re.compile(
+    "(?:(?<![\u0621-\u064A])|(?<=(?<![\u0621-\u064A])[\u0648\u0641]))(" + "|".join(_alts) + ")(?![\u0621-\u064A])"
+    "|([\uFDFA\uFDFB\uFD40-\uFD4F])"
+)
+
+
+LIGATURES_ON = True
+_MARK_RE = re.compile("[\u064B-\u065F\u0670\u0640]")
+
+
+def _norm(t):
+    t = _MARK_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return re.sub("[أإآ]", "ا", t).replace("ى", "ي")
+
+
+_SALAWAT = {_norm(p) for p in [
+    "صلى الله عليه وسلم", "صلى الله عليه وآله وسلم", "صلى الله عليه وعلى آله وسلم",
+    "صلى الله عليه وعلى آله وصحبه وسلم", "صلى الله وسلم عليه",
+]}
+_JALLA = {_norm("جل جلاله")}
+
+
+def _ligature(chunk):
+    if not LIGATURES_ON:
+        return chunk
+    n = _norm(chunk)
+    if n in _SALAWAT:
+        return "\uFDFA"  # ﷺ
+    if n in _JALLA:
+        return "\uFDFB"  # ﷻ
+    return chunk
+
+
+def split_honorifics(text):
+    """-> [(chunk, is_honorific)]"""
+    if not HONORIFICS_ON:
+        return [(text, False)]
+    res, pos = [], 0
+    for m in HON_RE.finditer(text):
+        if m.start() > pos:
+            res.append((text[pos:m.start()], False))
+        res.append((_ligature(m.group(0)), True))
+        pos = m.end()
+    if pos < len(text):
+        res.append((text[pos:], False))
+    return res
+
+
 # ---------- selection parsing ----------
 def parse_ranges(spec, lo=None, hi=None):
     out = []
@@ -150,8 +254,13 @@ def add_par(doc, runs, size, color_for_plain=None, ayah_color=AYAH_COLOR, space_
     p.paragraph_format.space_after = Pt(space_after)
     p.paragraph_format.line_spacing = 1.1
     for text, is_ayah in runs:
-        r = p.add_run(text)
-        _style_run(r, size, ayah_color if is_ayah else color_for_plain, font=AYAH_FONT if is_ayah else FONT)
+        if is_ayah:
+            r = p.add_run(text)
+            _style_run(r, size, ayah_color, font=AYAH_FONT)
+            continue
+        for chunk, is_hon in split_honorifics(text):
+            r = p.add_run(chunk)
+            _style_run(r, size, HON_COLOR if is_hon else color_for_plain, font=FONT)
     return p
 
 
@@ -305,16 +414,57 @@ def build_surah(book, s, ayahs, out_path, keep_marks):
     return True
 
 
+def list_books(data_dir, out_file):
+    """Scan data_dir for tafsir-book-*.json[.gz] and write 'id<TAB>short_name<TAB>name<TAB>author'."""
+    ids = {}
+    for p in data_dir.glob("tafsir-book-*.json*"):
+        m = re.match(r"tafsir-book-(\d+)\.json(\.gz)?$", p.name)
+        if m:
+            ids[int(m.group(1))] = int(m.group(1))
+    rows = []
+    dec = json.JSONDecoder()
+    for bid in sorted(ids):
+        f = find_book_file(data_dir, bid)
+        if not f:
+            continue
+        try:
+            op = gzip.open if f.suffix == ".gz" else open
+            with op(f, "rt", encoding="utf-8") as fh:
+                head = fh.read(200000)
+            i = head.index('"book"')
+            obj, _ = dec.raw_decode(head, head.index("{", i))
+            au = obj.get("author") or {}
+            rows.append((bid, obj.get("short_name") or "", obj.get("name") or "", au.get("ar_name") or au.get("full_name") or ""))
+        except Exception as e:
+            rows.append((bid, "?", f"unreadable: {e}", ""))
+    with open(out_file, "w", encoding="utf-8") as o:
+        o.write("id\tshort_name\tname\tauthor\n")
+        for r in rows:
+            o.write("\t".join(str(x) for x in r) + "\n")
+    print(f"{len(rows)} tafsirs -> {out_file}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=".", help="folder containing tafsir-book-*.json[.gz]")
-    ap.add_argument("--ids", required=True, help="e.g. 1-4,7-9,12")
+    ap.add_argument("--list", metavar="FILE", help="write id/name/author of every tafsir in --data to FILE and exit")
+    ap.add_argument("--ids", help="e.g. 1-4,7-9,12")
     ap.add_argument("--mode", choices=["complete", "surah", "both"], default="complete")
     ap.add_argument("--surahs", default="", help="optional filter, e.g. 1,2,18-20 (default: all)")
     ap.add_argument("-o", "--out", default="out")
+    ap.add_argument("--no-ligatures", action="store_true", help="keep full salawat text instead of ﷺ")
+    ap.add_argument("--no-honorifics", action="store_true", help="don't colour honorific phrases")
     ap.add_argument("--keep-page-marks", action="store_true", help="keep -[٤٠]- page markers")
     args = ap.parse_args()
 
+    if args.list:
+        list_books(Path(args.data), args.list)
+        return
+    if not args.ids:
+        ap.error("--ids is required (or use --list FILE)")
+    global HONORIFICS_ON, LIGATURES_ON
+    LIGATURES_ON = not args.no_ligatures
+    HONORIFICS_ON = not args.no_honorifics
     data, out = Path(args.data), Path(args.out)
     wanted = set(parse_ranges(args.surahs)) if args.surahs else None
     for bid in parse_ranges(args.ids):
