@@ -313,24 +313,58 @@ def new_document(with_toc_update=False):
     return doc
 
 
-def title_block(doc, book):
+def _name(v):
+    if not v:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, dict):
+        return (v.get("full_name") or v.get("ar_name") or v.get("name") or "").strip()
+    return str(v)
+
+
+def info_lines(book):
     b = book.get("book", {})
-    add_par(doc, [(b.get("name") or b.get("short_name") or "", False)], 30, RGBColor(0, 0, 0), space_after=18).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    if b.get("short_name") and b.get("short_name") != b.get("name"):
-        add_par(doc, [(b["short_name"], False)], 20, space_after=12).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    lines = []
-    au = b.get("author") or {}
-    if au.get("full_name") or au.get("ar_name"):
-        lines.append(au.get("full_name") or au.get("ar_name"))
-    if b.get("mohaqeq"):
-        lines.append("تحقيق: " + b["mohaqeq"])
-    if b.get("nasher"):
-        lines.append("الناشر: " + b["nasher"])
-    if b.get("edition"):
-        lines.append("الطبعة: " + b["edition"])
-    for ln in lines:
-        add_par(doc, [(ln, False)], 16, space_after=6).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    add_par(doc, [("المصدر: الموسوعة القرآنية quranpedia.net", False)], 12, FOOT_COLOR).alignment = WD_ALIGN_PARAGRAPH.CENTER
+    rows = [
+        ("المؤلف", _name(b.get("author"))),
+        ("تحقيق", _name(b.get("mohaqeq"))),
+        ("تقديم", _name(b.get("introducer"))),
+        ("مراجعة", _name(b.get("reviewer"))),
+        ("ترجمة", _name(b.get("translator"))),
+        ("الناشر", _name(b.get("nasher"))),
+        ("الطبعة", _name(b.get("edition"))),
+        ("سنة النشر", _name(b.get("publish_year"))),
+        ("عدد الأجزاء", _name(b.get("parts"))),
+    ]
+    return [(k, v) for k, v in rows if v]
+
+
+def _centered(doc, runs, space_after=6):
+    p = doc.add_paragraph()
+    _rtl_par(p)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(space_after)
+    for text, size, color, bold in runs:
+        _style_run(p.add_run(text), size, color, bold=bold)
+    return p
+
+
+def title_block(doc, book, compact=False):
+    b = book.get("book", {})
+    name = b.get("name") or b.get("short_name") or ""
+    _centered(doc, [(name, 20 if compact else 30, RGBColor(0, 0, 0), True)], space_after=8 if compact else 18)
+    if b.get("short_name") and b.get("short_name") != name:
+        _centered(doc, [(b["short_name"], 14 if compact else 20, TAFSIR_LABEL_COLOR, False)], space_after=8)
+    for k, v in info_lines(book):
+        _centered(doc, [(k + ": ", 14 if compact else 16, FOOT_COLOR, True), (v, 14 if compact else 16, None, False)], space_after=4)
+    if not compact:
+        _source_line(doc, book)
+
+
+def _source_line(doc, book):
+    ver = (book.get("license") or {}).get("version")
+    txt = "المصدر: الموسوعة القرآنية quranpedia.net" + (f" — إصدار البيانات: {ver}" if ver else "")
+    _centered(doc, [(txt, 12, FOOT_COLOR, False)], space_after=4)
 
 
 # ---------- core ----------
@@ -406,6 +440,8 @@ def build_surah(book, s, ayahs, out_path, keep_marks):
     if not paras:
         return False
     doc = new_document()
+    title_block(doc, book)
+    page_break(doc)
     add_heading(doc, sname(s), 24)
     b = book.get("book", {})
     add_par(doc, [(b.get("short_name") or b.get("name") or "", False)], 14, FOOT_COLOR).alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -444,6 +480,175 @@ def list_books(data_dir, out_file):
     print(f"{len(rows)} tafsirs -> {out_file}")
 
 
+# ---------- combined mode (Quran ayah + several tafsirs under it) ----------
+TAFSIR_LABEL_COLOR = RGBColor(0x1F, 0x3A, 0x5F)
+_AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+
+
+def ar_num(n):
+    return str(n).translate(_AR_DIGITS)
+
+
+def find_file(data_dir: Path, name: str):
+    for c in (data_dir / (name + ".gz"), data_dir / name / name, data_dir / name):
+        if c.is_file():
+            return c
+    return None
+
+
+def load_quran(data_dir: Path, mushaf_id: int):
+    f = find_file(data_dir, f"mushafs-{mushaf_id}.json")
+    if not f:
+        sys.exit(f"mushafs-{mushaf_id}.json[.gz] not found in {data_dir}")
+    d = load_json(f)
+    d = d.get("data", d)
+    q = {}
+    for su in d.get("surahs", []):
+        sid = int(su["id"])
+        q[sid] = {int(a["number"]): a.get("text", "") for a in su.get("ayahs", [])}
+    return q, d.get("name", "")
+
+
+def compact_book(book, wanted):
+    """-> {'meta','label','surahs': {s: {'ayahs': {a:[key]}, 'pos': {key:[a]}}}}"""
+    b = book.get("book", {})
+    out = {"meta": book, "label": b.get("short_name") or b.get("name") or str(b.get("id")), "surahs": {}}
+    for a in book.get("ayahs", []):
+        s, n = a.get("surah"), a.get("ayah")
+        if s is None or n is None or (wanted and s not in wanted):
+            continue
+        sd = out["surahs"].setdefault(s, {"ayahs": {}, "pos": {}})
+        for c in a.get("content", []):
+            txt = c.get("text", "")
+            if not txt or is_heading_spillover(txt):
+                continue
+            key = (c.get("part"), c.get("page"), txt)
+            lst = sd["ayahs"].setdefault(n, [])
+            if key not in lst:
+                lst.append(key)
+            pl = sd["pos"].setdefault(key, [])
+            if n not in pl:
+                pl.append(n)
+    return out
+
+
+def add_ayah_par(doc, text, n):
+    p = doc.add_paragraph()
+    _rtl_par(p)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(16)
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.keep_with_next = True
+    p.paragraph_format.line_spacing = 1.3
+    if text:
+        _style_run(p.add_run("﴿" + text + "﴾"), AYAH_PT + 4, AYAH_COLOR, font=AYAH_FONT)
+        _style_run(p.add_run(" " + ar_num(n)), 12, FOOT_COLOR, font=FONT)
+    else:
+        _style_run(p.add_run("مقدمة" if n == 0 else f"آية {ar_num(n)}"), 14, FOOT_COLOR, font=FONT, bold=True)
+
+
+def add_tafsir_label(doc, label, note=""):
+    p = doc.add_paragraph()
+    _rtl_par(p)
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.keep_with_next = True
+    _style_run(p.add_run(label), 14, TAFSIR_LABEL_COLOR, font=FONT, bold=True)
+    if note:
+        _style_run(p.add_run("  " + note), 12, FOOT_COLOR, font=FONT)
+
+
+def render_combined_surah(doc, s, books, quran, seen, keep_marks):
+    """Returns True if any tafsir content was written."""
+    qs = quran.get(s, {})
+    nums = set(qs)
+    for b in books:
+        nums |= set(b["surahs"].get(s, {}).get("ayahs", {}))
+    wrote = False
+    for n in sorted(nums):
+        blocks = []  # (label, note, paras)
+        for b in books:
+            sd = b["surahs"].get(s)
+            if not sd:
+                continue
+            for key in sd["ayahs"].get(n, []):
+                if key in seen[b["label"]]:
+                    continue
+                seen[b["label"]].add(key)
+                paras = html_to_paras(key[2], keep_marks)
+                if not paras:
+                    continue
+                pos = sd["pos"][key]
+                note = f"(تفسير الآيات {ar_num(min(pos))}–{ar_num(max(pos))})" if len(pos) > 1 else ""
+                blocks.append((b["label"], note, paras))
+        if not qs.get(n) and not blocks:
+            continue
+        add_ayah_par(doc, qs.get(n, ""), n)
+        for label, note, paras in blocks:
+            add_tafsir_label(doc, label, note)
+            write_paras(doc, paras)
+            wrote = True
+    return wrote
+
+
+def combined_title(doc, books, mushaf_name=""):
+    _centered(doc, [("التفاسير المجموعة", 30, RGBColor(0, 0, 0), True)], space_after=14)
+    if mushaf_name:
+        _centered(doc, [("نص القرآن: ", 14, FOOT_COLOR, True), (mushaf_name, 14, None, False)], space_after=14)
+    for b in books:
+        title_block(doc, b["meta"], compact=True)
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+    _source_line(doc, books[0]["meta"])
+
+
+def run_combine(args, data, out, ids, wanted):
+    quran, mushaf_name = load_quran(data, args.mushaf)
+    books = []
+    for bid in ids:
+        f = find_book_file(data, bid)
+        if not f:
+            print(f"[{bid}] not found, skipped", file=sys.stderr)
+            continue
+        print(f"[{bid}] loading {f}")
+        books.append(compact_book(load_json(f), wanted))
+    if not books:
+        sys.exit("no books loaded")
+    surahs = sorted({s for b in books for s in b["surahs"]})
+    if wanted:
+        surahs = [s for s in surahs if s in wanted]
+    tag = "combined-" + "_".join(str(i) for i in ids[:6]) + ("_etc" if len(ids) > 6 else "")
+    out.mkdir(parents=True, exist_ok=True)
+    if args.mode in ("complete", "both"):
+        doc = new_document(with_toc_update=True)
+        combined_title(doc, books, mushaf_name)
+        page_break(doc)
+        add_heading(doc, "الفهرس", 22)
+        add_toc(doc)
+        seen = {b["label"]: set() for b in books}
+        for s in surahs:
+            page_break(doc)
+            add_heading(doc, sname(s), 24)
+            render_combined_surah(doc, s, books, quran, seen, args.keep_page_marks)
+        p = out / f"{tag}.docx"
+        doc.save(p)
+        print(f"  -> {p}")
+    if args.mode in ("surah", "both"):
+        d = out / tag
+        d.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for s in surahs:
+            doc = new_document()
+            combined_title(doc, books, mushaf_name)
+            page_break(doc)
+            add_heading(doc, sname(s), 24)
+            seen = {b["label"]: set() for b in books}
+            if render_combined_surah(doc, s, books, quran, seen, args.keep_page_marks):
+                nm = SURAHS[s - 1] if 1 <= s <= 114 else str(s)
+                doc.save(d / f"{s:03d}-{safe(nm)}.docx")
+                n += 1
+        print(f"  -> {d}/ ({n} files)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=".", help="folder containing tafsir-book-*.json[.gz]")
@@ -452,6 +657,8 @@ def main():
     ap.add_argument("--mode", choices=["complete", "surah", "both"], default="complete")
     ap.add_argument("--surahs", default="", help="optional filter, e.g. 1,2,18-20 (default: all)")
     ap.add_argument("-o", "--out", default="out")
+    ap.add_argument("--combine", action="store_true", help="per ayah: Quran text, then each selected tafsir under it")
+    ap.add_argument("--mushaf", type=int, default=1, help="mushaf id for Quran text in --combine (default 1 = Hafs, King Fahd)")
     ap.add_argument("--no-ligatures", action="store_true", help="keep full salawat text instead of ﷺ")
     ap.add_argument("--no-honorifics", action="store_true", help="don't colour honorific phrases")
     ap.add_argument("--keep-page-marks", action="store_true", help="keep -[٤٠]- page markers")
@@ -467,6 +674,9 @@ def main():
     HONORIFICS_ON = not args.no_honorifics
     data, out = Path(args.data), Path(args.out)
     wanted = set(parse_ranges(args.surahs)) if args.surahs else None
+    if args.combine:
+        run_combine(args, data, out, parse_ranges(args.ids), wanted)
+        return
     for bid in parse_ranges(args.ids):
         f = find_book_file(data, bid)
         if not f:
